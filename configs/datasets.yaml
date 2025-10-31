@@ -1,0 +1,24 @@
+# Dataset split configuration
+defaults:
+  seed: 42
+  splits:
+    train: 0.8
+    validation: 0.1
+    test: 0.1
+  stratify:
+    - page_type
+    - domain
+
+sources:
+  navpage:
+    path: data/processed/navpage_latest.jsonl
+    weight: 0.5
+  productpage:
+    path: data/processed/productpage_latest.jsonl
+    weight: 0.5
+
+metadata:
+  schema_version: "v1"
+  description: >
+    Placeholder configuration for splitting curated navpage/productpage datasets
+    ahead of Gemma fine-tuning.

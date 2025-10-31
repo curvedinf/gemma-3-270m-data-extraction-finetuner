@@ -1,0 +1,48 @@
+# Training hyperparameter template for Gemma 3 270M fine-tuning
+run:
+  output_dir: models/checkpoints/run_latest
+  seed: 42
+  mixed_precision: bf16
+  save_steps: 500
+  log_steps: 25
+
+model:
+  base_model: google/gemma-3-0.27b-it
+  revision: main
+  tokenizer: google/gemma-3-0.27b-it
+  trust_remote_code: false
+
+peft:
+  enabled: true
+  r: 8
+  lora_alpha: 16
+  lora_dropout: 0.05
+  target_modules:
+    - q_proj
+    - v_proj
+
+training:
+  lr: 0.0002
+  epochs: 3
+  max_steps: null
+  warmup_ratio: 0.03
+  gradient_accumulation_steps: 8
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  max_seq_length: 4096
+  gradient_checkpointing: true
+
+data:
+  train_file: data/processed/train.v1.jsonl
+  eval_file: data/processed/validation.v1.jsonl
+  prompt_template: configs/prompts/train_prompt.txt
+  packing: false
+
+evaluation:
+  eval_strategy: steps
+  eval_steps: 500
+  save_total_limit: 3
+
+notes: >
+  Placeholder configuration. Tune hyperparameters once dataset characteristics
+  and hardware constraints are finalized.

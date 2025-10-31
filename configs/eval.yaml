@@ -1,0 +1,20 @@
+# Evaluation generation configuration
+model_output:
+  candidate_dir: reports/model_outputs
+  prompt_template: configs/prompts/eval_prompt.txt
+
+inference:
+  batch_size: 4
+  max_new_tokens: 2048
+  temperature: 0.0
+  top_p: 0.9
+  stop_sequences:
+    - "</assistant>"
+
+datasets:
+  validation: data/processed/validation.v1.jsonl
+  test: data/processed/test.v1.jsonl
+
+notes: >
+  Placeholder inference parameters for running Gemma 3 270M via ROCm-compatible
+  runtime before passing outputs to the LLM-as-judge step.

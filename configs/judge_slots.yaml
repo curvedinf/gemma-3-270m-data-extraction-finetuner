@@ -1,0 +1,36 @@
+# Slot similarity definitions for LLM-as-judge evaluation.
+defaults:
+  judge_model: gpt-4o-mini
+  temperature: 0.0
+  max_tokens: 512
+  retry_on_invalid_json: 3
+
+slots:
+  product_id:
+    similarity: exact
+  price:
+    similarity: numeric_tol
+    tolerance: 0.01
+  availability_date:
+    similarity: date_norm
+  categories:
+    similarity: set_match
+  short_description:
+    similarity: substring
+  long_description:
+    similarity: llm_similarity
+    threshold: 0.85
+
+levels:
+  exact:
+    description: Candidate must exactly match the reference value.
+  substring:
+    description: Reference string must be a substring of the candidate.
+  numeric_tol:
+    description: Numeric values must match within specified tolerance.
+  set_match:
+    description: Compare sets ignoring order and duplicates.
+  date_norm:
+    description: Normalize both values to ISO date strings before comparing.
+  llm_similarity:
+    description: Solicit judge-provided similarity score between 0 and 1.

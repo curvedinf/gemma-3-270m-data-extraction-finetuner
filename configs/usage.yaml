@@ -1,0 +1,22 @@
+# Token usage projection inputs
+budget:
+  daily_tokens: 10000000
+  alert_threshold: 0.85
+
+traffic_profile:
+  navpage:
+    requests_per_day: 120000
+    avg_prompt_tokens: 1300
+    avg_completion_tokens: 350
+  productpage:
+    requests_per_day: 80000
+    avg_prompt_tokens: 1500
+    avg_completion_tokens: 420
+
+mitigations:
+  html_truncation_tokens: 2000
+  caching_hit_rate: 0.1
+
+notes: >
+  Placeholder figures for estimating net token consumption across nav and product
+  page extraction flows.
