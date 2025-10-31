@@ -10,15 +10,15 @@ defaults:
     - domain
 
 sources:
-  navpage:
-    path: data/processed/navpage_latest.jsonl
+  navpage_classifier:
+    path: data/processed/navpage_classifier_latest.jsonl
     weight: 0.5
-  productpage:
-    path: data/processed/productpage_latest.jsonl
+  productpage_extractor:
+    path: data/processed/productpage_extractor_latest.jsonl
     weight: 0.5
 
 metadata:
   schema_version: "v1"
   description: >
-    Placeholder configuration for splitting curated navpage/productpage datasets
+    Placeholder configuration for splitting curated nav-page classifier and product-page extractor datasets
     ahead of Gemma fine-tuning.

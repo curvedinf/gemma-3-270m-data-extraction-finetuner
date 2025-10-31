@@ -5,11 +5,15 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, Iterable, List
 
+import torch
 from litellm import completion
+from peft import AutoPeftModelForCausalLM
+from transformers import AutoTokenizer
 
 from . import LOGGER
+from .config import SETTINGS
 from .io_utils import load_yaml, read_jsonl, write_jsonl
 
 EVAL_OUTPUT_DIR = Path("reports/model_outputs")
@@ -18,20 +22,114 @@ EVAL_CONFIG_PATH = Path("configs/eval.yaml")
 
 
 def generate_outputs(split: str, config_path: str) -> None:
-    """
-    Run inference with the fine-tuned model to collect outputs for a dataset split.
+    """Run ROCm-enabled inference with the fine-tuned model for a dataset split."""
 
-    This function currently serves as a hook for integrating the ROCm vLLM
-    inference pipeline. Populate it with vLLM calls that generate candidate JSON
-    responses and persist to `reports/model_outputs/{split}_candidates.jsonl`.
-    """
-    EVAL_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    LOGGER.info(
-        "Generation stub invoked for split=%s using config=%s. "
-        "Integrate ROCm vLLM inference here.",
-        split,
-        config_path,
-    )
+    config = load_yaml(Path(config_path))
+    model_cfg = config.get("model", {})
+    inference_cfg = config.get("inference", {})
+    output_cfg = config.get("model_output", {})
+
+    dataset_path = Path(config.get("datasets", {}).get(split, ""))
+    if not dataset_path.exists():
+        raise FileNotFoundError(f"Dataset split '{split}' not found at {dataset_path}")
+
+    candidate_dir = Path(output_cfg.get("candidate_dir", EVAL_OUTPUT_DIR))
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    prompt_template_path = Path(output_cfg.get("prompt_template", "configs/prompts/eval_prompt.txt"))
+    prompt_template = prompt_template_path.read_text(encoding="utf-8")
+
+    model_path = Path(model_cfg.get("path", "models/checkpoints/run_latest"))
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model checkpoint not found at {model_path}")
+
+    torch_dtype = _resolve_torch_dtype(model_cfg.get("dtype", "bfloat16"))
+    max_seq_length = int(model_cfg.get("max_seq_length", 131072))
+    device = model_cfg.get("device")
+    if not device or device == "auto":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+    device_map = model_cfg.get("device_map")
+
+    LOGGER.info("Loading tokenizer from %s", model_path)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "left"
+    tokenizer.model_max_length = max_seq_length
+
+    LOGGER.info("Loading model from %s (dtype=%s, device_map=%s)", model_path, torch_dtype, device_map)
+    load_kwargs = {"torch_dtype": torch_dtype}
+    if device_map:
+        load_kwargs["device_map"] = device_map
+
+    model = AutoPeftModelForCausalLM.from_pretrained(model_path, **load_kwargs)
+    if model_cfg.get("merge_lora", True) and hasattr(model, "merge_and_unload"):
+        LOGGER.info("Merging LoRA adapters into the base model for inference")
+        model = model.merge_and_unload()
+    if not device_map:
+        model.to(device)
+    model.eval()
+
+    batch_size = int(inference_cfg.get("batch_size", 1))
+    max_new_tokens = int(inference_cfg.get("max_new_tokens", 1024))
+    temperature = float(inference_cfg.get("temperature", 0.0))
+    top_p = float(inference_cfg.get("top_p", 0.9))
+    stop_sequences = inference_cfg.get("stop_sequences", []) or []
+
+    records = list(read_jsonl(dataset_path))
+    total = len(records)
+    LOGGER.info("Generating outputs for %d examples in %s", total, dataset_path)
+
+    candidate_file = candidate_dir / f"{split}_candidates.jsonl"
+    generated_records: List[Dict] = []
+
+    for start in range(0, total, batch_size):
+        batch = records[start : start + batch_size]
+        prompts = [_format_prompt_for_inference(example, prompt_template) for example in batch]
+        encodings = tokenizer(
+            prompts,
+            return_tensors="pt",
+            padding=True,
+            truncation=True,
+            max_length=max_seq_length,
+        )
+        encodings = {k: v.to(device) for k, v in encodings.items()}
+
+        do_sample = temperature > 0
+        gen_kwargs = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+            "pad_token_id": tokenizer.pad_token_id,
+            "eos_token_id": tokenizer.eos_token_id,
+        }
+        if do_sample:
+            gen_kwargs["temperature"] = temperature
+            gen_kwargs["top_p"] = top_p
+        else:
+            gen_kwargs["temperature"] = 0.0
+
+        with torch.no_grad():
+            generated = model.generate(**encodings, **gen_kwargs)
+
+        prompt_length = encodings["input_ids"].shape[1]
+        completions = generated[:, prompt_length:]
+        decoded = tokenizer.batch_decode(completions, skip_special_tokens=True)
+
+        for example, prompt, completion in zip(batch, prompts, decoded):
+            trimmed = _trim_stop_sequences(completion, stop_sequences)
+            generated_records.append(
+                {
+                    "id": example["id"],
+                    "task": example.get("task") or example.get("metadata", {}).get("task"),
+                    "prompt": prompt,
+                    "candidate": trimmed,
+                }
+            )
+
+        if (start // batch_size + 1) % 10 == 0 or (start + batch_size) >= total:
+            LOGGER.info("Processed %d/%d examples", min(start + batch_size, total), total)
+
+    write_jsonl(candidate_file, generated_records)
+    LOGGER.info("Wrote %d candidate completions to %s", len(generated_records), candidate_file)
 
 
 def run_judging(split: str, config_path: str) -> None:
@@ -59,7 +157,7 @@ def run_judging(split: str, config_path: str) -> None:
     slots_config = judge_config.get("slots", {})
     levels = judge_config.get("levels", {})
 
-    judge_model = defaults.get("judge_model")
+    judge_model = defaults.get("judge_model") or SETTINGS.litellm_judge_model
     retry_limit = defaults.get("retry_on_invalid_json", 3)
     temperature = defaults.get("temperature", 0.0)
     max_tokens = defaults.get("max_tokens", 512)
@@ -162,9 +260,16 @@ def _invoke_litellm_judge(
     Call LiteLLM with a structured prompt describing comparison rules.
     """
     if not judge_model:
-        raise ValueError("Judge model must be specified in configs/judge_slots.yaml defaults.judge_model")
+        raise ValueError(
+            "Judge model must be specified in configs/judge_slots.yaml defaults.judge_model "
+            "or exported via the LITELLM_JUDGE_MODEL environment variable."
+        )
 
-    reference_json = json.dumps(reference.get("response_strong", {}), ensure_ascii=False, sort_keys=True)
+    reference_payload = reference.get("response_strong", {})
+    if isinstance(reference_payload, (dict, list)):
+        reference_json = json.dumps(reference_payload, ensure_ascii=False, sort_keys=True)
+    else:
+        reference_json = str(reference_payload)
     candidate_payload = candidate.get("candidate") or candidate.get("response")
     if isinstance(candidate_payload, dict):
         candidate_json = json.dumps(candidate_payload, ensure_ascii=False, sort_keys=True)
@@ -223,6 +328,53 @@ def _build_judge_prompt(reference_json: str, candidate_json: str, slots_config: 
         "Candidate JSON:\n"
         f"{candidate_json}\n"
     )
+
+
+def _resolve_torch_dtype(name: str):
+    lookup = {
+        "float32": torch.float32,
+        "fp32": torch.float32,
+        "bfloat16": torch.bfloat16,
+        "bf16": torch.bfloat16,
+        "float16": torch.float16,
+        "fp16": torch.float16,
+        "half": torch.float16,
+    }
+    return lookup.get(str(name).lower(), torch.float32)
+
+
+def _format_prompt_for_inference(example: Dict, template: str) -> str:
+    metadata = example.get("metadata", {}) or {}
+    system_prompt = (
+        example.get("system_prompt")
+        or metadata.get("system_prompt")
+        or "You are a precise assistant."
+    ).strip()
+    user_prompt = (
+        example.get("prompt_text")
+        or example.get("prompt")
+        or metadata.get("user_prompt")
+        or ""
+    ).strip()
+
+    return (
+        template.replace("{{system_prompt}}", system_prompt)
+        .replace("{{user_prompt}}", user_prompt)
+        .rstrip()
+    )
+
+
+def _trim_stop_sequences(text: str, stop_sequences: Iterable[str]) -> str:
+    if not text:
+        return ""
+    trimmed = text
+    for stop in stop_sequences:
+        if not stop:
+            continue
+        idx = trimmed.find(stop)
+        if idx != -1:
+            trimmed = trimmed[:idx]
+    return trimmed.strip()
 
 
 def _summarize_judge_run(records: List[Dict]) -> Dict:

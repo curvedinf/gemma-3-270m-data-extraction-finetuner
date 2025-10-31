@@ -7,6 +7,8 @@ invoking Fabric contexts directly.
 
 import logging
 
+from .config import SETTINGS  # noqa: F401  # Ensure dotenv loads on import
+
 
 def _configure_logging() -> logging.Logger:
     logger = logging.getLogger("gemma_finetune")

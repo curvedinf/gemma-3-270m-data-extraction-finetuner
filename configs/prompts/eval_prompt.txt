@@ -1,10 +1,7 @@
 <start_of_turn>system:
-You are evaluating the fine-tuned Gemma model on held-out HTML documents.
-Return only the structured JSON response.
+{{system_prompt}}
 <end_of_turn>
 
 <start_of_turn>user:
-{{html_context}}
----
-Extraction instructions: {{task_instructions}}
+{{user_prompt}}
 <end_of_turn>

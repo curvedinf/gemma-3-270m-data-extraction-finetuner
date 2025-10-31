@@ -16,13 +16,11 @@ def build_namespace() -> Collection:
     ns = Collection()
 
     env_ns = Collection("env")
-    env_ns.add_task(env.bootstrap, "bootstrap")
     env_ns.add_task(env.lock, "lock")
     env_ns.add_task(env.check, "check")
     ns.add_collection(env_ns)
 
     dataset_ns = Collection("dataset")
-    dataset_ns.add_task(dataset.pull, "pull")
     dataset_ns.add_task(dataset.clean, "clean")
     dataset_ns.add_task(dataset.split, "split")
     dataset_ns.add_task(dataset.stats, "stats")

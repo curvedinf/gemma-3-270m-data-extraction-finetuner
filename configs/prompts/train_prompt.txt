@@ -1,10 +1,7 @@
 <start_of_turn>system:
-You are a data extraction assistant that converts raw HTML into structured JSON
-matching the provided schema. Produce only valid JSON.
+{{system_prompt}}
 <end_of_turn>
 
 <start_of_turn>user:
-{{html_context}}
----
-Task: {{task_instructions}}
+{{user_prompt}}
 <end_of_turn>

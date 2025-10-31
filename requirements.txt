@@ -11,3 +11,5 @@ rich>=13.7.1
 unsloth>=2024.5.7
 trl>=0.8.6
 litellm>=1.43.12
+python-dotenv>=1.0.1
+duckdb>=0.10.2

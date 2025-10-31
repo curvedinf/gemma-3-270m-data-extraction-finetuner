@@ -21,9 +21,9 @@
 ## Fabric Task Matrix
 | Group | Task | Responsibility |
 | --- | --- | --- |
-| `env` | `fab env.bootstrap` | Create Python env, install deps, pull base model weights. |
-| `dataset` | `fab dataset.pull` | Export strong-model logs into `data/raw`. |
-|  | `fab dataset.clean` | Normalize HTML, strip PII, enforce schema, dedupe. |
+| `env` | `./scripts/setup_env.sh` | Create Python env, install deps, scaffold dotenv file. |
+| `dataset` | `scp user@server:/path/dataset.duckdb data/raw/dataset.duckdb` | Copy curated exemplars into the repo. |
+|  | `fab dataset.clean` | Normalize prompts/targets, strip PII, enforce schema, dedupe. |
 |  | `fab dataset.split` | Stratified split into train/val/test (config-driven). |
 |  | `fab dataset.stats` | Emit summary stats (token counts, slot coverage). |
 | `train` | `fab train.prepare` | Materialize training config, resolve paths, seed directories. |
@@ -39,12 +39,9 @@
 ## Data Creation Pipeline
 1. **Capture strong-model references**  
    - Log HTML page source, prompt template (nav vs product), and strong-model extraction JSON.  
-   - Save as `data/raw/{date}_{source}.jsonl` with schema:  
-     ```jsonc
-     {"id": "...", "page_type": "navpage|productpage", "html": "...", "prompt": "...", "response_strong": {...}, "metadata": {...}}
-     ```
+   - Append rows into a DuckDB database (default `data/raw/dataset.duckdb`) with table `examples(id TEXT PRIMARY KEY, task TEXT, prompt_text TEXT, response_strong JSON/TEXT, metadata JSON, slot_specs JSON NULLABLE, system_prompt TEXT NULLABLE)`.
 2. **Curation & Augmentation**  
-   - Run `dataset.clean` to strip tracking scripts, normalize whitespace, and redact sensitive tokens.  
+   - Run `dataset.clean` to strip tracking scripts, normalize whitespace, and serialize prompts/targets for each task (nav-page classification, product-page extraction, or future workflows).  
    - Optionally augment with adversarial HTML variants (DOM shuffles, malformed tags) to harden model.  
    - Attach `slot_specs` describing each extraction field, target type, tolerances.
 3. **Schema Validation**  

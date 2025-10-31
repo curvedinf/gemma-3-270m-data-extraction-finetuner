@@ -3,6 +3,13 @@ model_output:
   candidate_dir: reports/model_outputs
   prompt_template: configs/prompts/eval_prompt.txt
 
+model:
+  path: models/checkpoints/run_latest
+  dtype: bfloat16
+  max_seq_length: 131072
+  device_map: auto
+  merge_lora: true
+
 inference:
   batch_size: 4
   max_new_tokens: 2048

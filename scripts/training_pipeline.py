@@ -57,7 +57,9 @@ def run_training(config_path: str, resume_from: Optional[str] = None) -> None:
     dataset_dict = _load_datasets(data_cfg)
     prompt_template = Path(data_cfg["prompt_template"]).read_text(encoding="utf-8")
 
-    model, tokenizer = _load_model(config, training_cfg, peft_cfg)
+    max_seq_length = training_cfg.get("max_seq_length", 131072)
+    model, tokenizer = _load_model(config, training_cfg, peft_cfg, max_seq_length=max_seq_length)
+    tokenizer.model_max_length = max_seq_length
     tokenizer.padding_side = "right"
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -73,7 +75,7 @@ def run_training(config_path: str, resume_from: Optional[str] = None) -> None:
         eval_dataset=dataset_dict.get("validation"),
         args=training_args,
         formatting_func=formatting_fn,
-        max_seq_length=training_cfg.get("max_seq_length", 4096),
+        max_seq_length=max_seq_length,
         packing=data_cfg.get("packing", False),
     )
 
@@ -105,12 +107,12 @@ def _load_datasets(data_cfg: Dict) -> Dict[str, Dict]:
     return dataset_dict
 
 
-def _load_model(config: Dict, training_cfg: Dict, peft_cfg: Dict):
+def _load_model(config: Dict, training_cfg: Dict, peft_cfg: Dict, *, max_seq_length: int):
     model_cfg = config.get("model", {})
-    max_seq_length = training_cfg.get("max_seq_length", 4096)
     load_in_4bit = peft_cfg.get("load_in_4bit", True)
+    rope_scaling = model_cfg.get("rope_scaling")
 
-    model, tokenizer = FastLanguageModel.from_pretrained(
+    model_kwargs = dict(
         model_name=model_cfg["base_model"],
         max_seq_length=max_seq_length,
         dtype=None,
@@ -118,6 +120,13 @@ def _load_model(config: Dict, training_cfg: Dict, peft_cfg: Dict):
         load_in_4bit=load_in_4bit,
         revision=model_cfg.get("revision"),
     )
+    if rope_scaling:
+        model_kwargs["rope_scaling"] = rope_scaling
+
+    model, tokenizer = FastLanguageModel.from_pretrained(**model_kwargs)
+    if rope_scaling:
+        model.config.rope_scaling = rope_scaling
+    model.config.max_position_embeddings = max_seq_length
 
     if peft_cfg.get("enabled", True):
         model = FastLanguageModel.get_peft_model(
@@ -161,16 +170,35 @@ def _build_training_arguments(run_cfg: Dict, training_cfg: Dict, evaluation_cfg:
 
 
 def _format_example(example: Dict, template: str):
-    html_context = example.get("html", "")
     metadata = example.get("metadata", {}) or {}
-    instructions = metadata.get("task_instructions") or example.get("prompt", "")
+    system_prompt = (
+        example.get("system_prompt")
+        or metadata.get("system_prompt")
+        or "You are a precise assistant."
+    ).strip()
+    user_prompt = (
+        example.get("prompt_text")
+        or example.get("prompt")
+        or metadata.get("user_prompt")
+        or ""
+    ).strip()
 
     rendered_prompt = (
-        template.replace("{{html_context}}", html_context.strip())
-        .replace("{{task_instructions}}", instructions.strip())
+        template.replace("{{system_prompt}}", system_prompt)
+        .replace("{{user_prompt}}", user_prompt)
         .rstrip()
     )
 
-    response = json.dumps(example.get("response_strong", {}), ensure_ascii=False, sort_keys=True)
-    conversation = f"{rendered_prompt}\n<start_of_turn>assistant:\n{response}\n<end_of_turn>"
+    if assistant_response := example.get("assistant_response"):
+        response_text = assistant_response.strip()
+    else:
+        payload = example.get("response_strong")
+        if isinstance(payload, (dict, list)):
+            response_text = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        elif payload is None:
+            response_text = ""
+        else:
+            response_text = str(payload).strip()
+
+    conversation = f"{rendered_prompt}\n<start_of_turn>assistant:\n{response_text}\n<end_of_turn>"
     return [conversation]

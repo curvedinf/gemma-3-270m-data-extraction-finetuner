@@ -5,14 +5,6 @@ from fabric import task
 from scripts import dataset_pipeline
 
 
-@task(help={"source": "Identifier for the raw data source (e.g., prod logs dump)."})
-def pull(c, source="production_logs"):
-    """
-    Export strong-model exemplars into file-based datasets under `data/raw/`.
-    """
-    dataset_pipeline.pull(source=source)
-
-
 @task(help={"schema_version": "Semantic version for the extraction schema."})
 def clean(c, schema_version="v1"):
     """
