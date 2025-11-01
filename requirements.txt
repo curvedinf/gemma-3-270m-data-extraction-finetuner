@@ -13,3 +13,4 @@ trl>=0.8.6
 litellm>=1.43.12
 python-dotenv>=1.0.1
 duckdb>=0.10.2
+optimum[amd]>=0.2.2

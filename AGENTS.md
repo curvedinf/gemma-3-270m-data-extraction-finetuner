@@ -9,7 +9,8 @@
 - Run `./scripts/setup_env.sh` to create `.venv`, install dependencies, and scaffold `.env` from the template.
 - Dataset flow: manually `scp` the DuckDB file into `data/raw/` (table `examples` with `id`, `task`, `prompt_text`, `response_strong`, `metadata`, optional `slot_specs`) and then run `fab dataset.clean|split|stats` for normalization, stratification, and coverage summaries.
 - Training flow: `fab train.prepare`, `fab train.run --config configs/training.yaml`, and `fab train.resume` scaffold, launch, and restart fine-tuning.
-- Evaluation and ops: `fab eval.generate|judge|report`, `fab package.export`, and `fab ops.project_tokens` cover judging, packaging, and usage tracking.
+- Evaluation and ops: `fab eval.generate|judge|report`, `fab package.export`, and `fab ops.project_tokens` cover judging, packaging, and usage tracking. Export ROCm env variables from `.env` (e.g., `ROCM_VISIBLE_DEVICES`, `HSA_OVERRIDE_GFX_VERSION`) before invoking long-context runs.
+- `requirements.txt` installs the ROCm nightly PyTorch stack and `optimum[amd]`; rerun `./scripts/setup_env.sh` after modifying dependencies or when AMD publishes updated wheels.
 - 128k context: `configs/training.yaml` ships with `max_seq_length: 131072` and rope scaling (`factor: 4.0`). Adjust downward only if a new task cannot fit within 128k tokens.
 
 ## Coding Style & Naming Conventions
@@ -32,6 +33,8 @@
 - `prompt_text` should mirror the real prompts (`NavPage.analyze` classification question or `ProductPage.analyze` extraction instructions) so fine-tuning sees the same mutilated HTML snippets the production LLM receives.
 - `response_strong` may be JSON or plain text; the cleaner serializes both into training/eval targets while preserving raw structures for judging.
 - Default rope scaling keeps Gemma responsive to long prompts; update `model.rope_scaling` and `training.max_seq_length` together when introducing new context lengths.
+- Evaluation loads checkpoints via ROCm Torch + PEFT; ensure the training output directory stays accessible and contains merged weights before calling `fab eval.generate`.
+- Flip `model.use_flash_attention_2` to `true` in training/eval configs once Flash Attention 2 kernels are confirmed on the host (per AMD's Hugging Face documentation).
 
 ## Security & Configuration Tips
 - Copy `.env.example` to `.env` and populate dataset paths (`DATASET_DB_PATH`), LiteLLM credentials, and registry tokens. The file is gitignored and automatically loaded by `scripts/config.py` via python-dotenv.

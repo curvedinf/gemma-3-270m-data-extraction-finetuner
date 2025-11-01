@@ -111,6 +111,7 @@ def _load_model(config: Dict, training_cfg: Dict, peft_cfg: Dict, *, max_seq_len
     model_cfg = config.get("model", {})
     load_in_4bit = peft_cfg.get("load_in_4bit", True)
     rope_scaling = model_cfg.get("rope_scaling")
+    use_fa2 = model_cfg.get("use_flash_attention_2")
 
     model_kwargs = dict(
         model_name=model_cfg["base_model"],
@@ -122,6 +123,8 @@ def _load_model(config: Dict, training_cfg: Dict, peft_cfg: Dict, *, max_seq_len
     )
     if rope_scaling:
         model_kwargs["rope_scaling"] = rope_scaling
+    if use_fa2 is not None:
+        model_kwargs["use_flash_attention_2"] = use_fa2
 
     model, tokenizer = FastLanguageModel.from_pretrained(**model_kwargs)
     if rope_scaling:

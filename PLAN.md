@@ -65,14 +65,15 @@
   ```
   Compress HTML via DOM summarization when needed; store tokenization heuristics in config.
 - **Hyperparameters (initial defaults)**: learning rate 2e-4 (LoRA), batch size 64 tokens effective, 3 epochs, cosine decay, gradient accumulation, sequence length tuned per HTML size.  
+- **Flash Attention 2**: Enabled by setting `model.use_flash_attention_2: true`; confirm the ROCm stack includes the FA2 kernels (per AMD Hugging Face guidance) before turning it on.
 - **Regularization**: mix-in synthetic negative examples (incorrect JSON) to encourage strict schema conformance; apply JSON formatting loss weighting.  
 - **Monitoring**: log training metrics (loss, perplexity, slot-level F1) to `wandb`/`mlflow`; store config + git commit hash.
 
 ## Evaluation & LLM-as-Judge
 - **Judge Model**: Use LiteLLM router to call strong judge models (e.g., gpt-4o-mini) with caching and rate controls.  
 - **Process**:  
-  1. `fab eval.generate` captures Gemma outputs on validation/test sets.  
-  2. `fab eval.judge` feeds `(prompt, reference, candidate, slot_specs)` to judge prompt, requesting JSON verdict per slot.  
+  1. `fab eval.generate` loads the fine-tuned checkpoint with ROCm Torch + `AutoPeftModelForCausalLM`, renders prompts from the DuckDB dataset, and writes candidates to `reports/model_outputs/{split}_candidates.jsonl`.  
+  2. `fab eval.judge` feeds `(prompt, reference, candidate, slot_specs)` to the judge prompt, requesting JSON verdict per slot.  
   3. Enforce deterministic formatting, retry on invalid JSON.  
   4. Store judge outputs in `reports/judge_run_{timestamp}.jsonl`.
 - **Slot Similarity Levels** (configurable in `configs/judge_slots.yaml`):  
@@ -90,8 +91,7 @@
 
 ## Packaging Considerations
 - Merge LoRA weights when needed and export `.safetensors`, tokenizer files, and inference config via `fab package.export`.  
-- Target ROCm-compatible vLLM runtime: emit artifacts in FP16/bfloat16, confirm tokenizer + config align with vLLM loader requirements, and include ROCm build notes.  
-- Optionally include AWQ/RTN quantized variants if ROCm vLLM pipeline supports them; document tested configs.  
+- Start with ROCm-friendly `fp16` exports (per vLLM hardware matrix) and document any additional quantization paths (e.g., AWQ) once validated.  
 - Emit manifest capturing model revision, dataset checksums, training config, and judge scores to accompany artifacts.  
 - Run integrity checks (hashes, JSON schema validation of manifest) before marking package ready for integration.
 

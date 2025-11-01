@@ -48,6 +48,7 @@ def generate_outputs(split: str, config_path: str) -> None:
     if not device or device == "auto":
         device = "cuda" if torch.cuda.is_available() else "cpu"
     device_map = model_cfg.get("device_map")
+    use_fa2 = model_cfg.get("use_flash_attention_2")
 
     LOGGER.info("Loading tokenizer from %s", model_path)
     tokenizer = AutoTokenizer.from_pretrained(model_path)
@@ -60,12 +61,18 @@ def generate_outputs(split: str, config_path: str) -> None:
     load_kwargs = {"torch_dtype": torch_dtype}
     if device_map:
         load_kwargs["device_map"] = device_map
+    if use_fa2 is not None:
+        load_kwargs["use_flash_attention_2"] = use_fa2
 
     model = AutoPeftModelForCausalLM.from_pretrained(model_path, **load_kwargs)
+    merged = False
     if model_cfg.get("merge_lora", True) and hasattr(model, "merge_and_unload"):
         LOGGER.info("Merging LoRA adapters into the base model for inference")
         model = model.merge_and_unload()
+        merged = True
     if not device_map:
+        model.to(device)
+    elif merged:
         model.to(device)
     model.eval()
 

@@ -37,6 +37,9 @@ fi
 log "Upgrading pip"
 "$PYTHON_VENV" -m pip install --upgrade pip
 
+log "Installing ROCm nightly PyTorch stack"
+"$PYTHON_VENV" -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.0
+
 REQ_FILE="${REPO_ROOT}/requirements.txt"
 if [ -f "$REQ_FILE" ]; then
     log "Installing dependencies from requirements.txt"
@@ -44,9 +47,6 @@ if [ -f "$REQ_FILE" ]; then
 else
     log "requirements.txt not found; skipping dependency installation"
 fi
-
-log "Installing ROCm nightly PyTorch stack"
-"$PYTHON_VENV" -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.0
 
 ENV_TEMPLATE="${REPO_ROOT}/.env.example"
 ENV_FILE="${REPO_ROOT}/.env"
