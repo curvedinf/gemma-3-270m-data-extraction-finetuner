@@ -37,10 +37,13 @@ fi
 log "Upgrading pip"
 "$PYTHON_VENV" -m pip install --upgrade pip
 
-log "Installing ROCm nightly PyTorch stack"
-"$PYTHON_VENV" -m pip install --pre torch torchvision torchaudio --index-url https://download.pytorch.org/whl/nightly/rocm7.0
-
 REQ_FILE="${REPO_ROOT}/requirements.txt"
+log "Ensuring ROCm nightly PyTorch stack"
+"$PYTHON_VENV" -m pip uninstall -y torch torchvision torchaudio >/dev/null 2>&1 || true
+"$PYTHON_VENV" -m pip install --pre --force-reinstall \
+    --index-url https://download.pytorch.org/whl/nightly/rocm7.0 \
+    torch torchvision torchaudio
+
 if [ -f "$REQ_FILE" ]; then
     log "Installing dependencies from requirements.txt"
     "$PYTHON_VENV" -m pip install -r "$REQ_FILE"

@@ -8,10 +8,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional
 
+from .config import SETTINGS  # noqa: F401 - ensure .env is loaded before ROCm checks
+
+try:
+    from unsloth import FastLanguageModel  # Import before transformers/trl for optimizations
+except (NotImplementedError, ImportError) as exc:  # pragma: no cover - GPU guard
+    FastLanguageModel = None  # type: ignore
+    UNSLOTH_IMPORT_ERROR = exc
+else:
+    UNSLOTH_IMPORT_ERROR = None
+
 from datasets import load_dataset
-from trl import SFTTrainer
 from transformers import TrainingArguments
-from unsloth import FastLanguageModel
+from trl import SFTTrainer
 
 from . import LOGGER
 from .io_utils import load_yaml
@@ -44,6 +53,13 @@ def run_training(config_path: str, resume_from: Optional[str] = None) -> None:
     """
     Execute the fine-tuning job using the provided configuration.
     """
+    if FastLanguageModel is None:
+        raise RuntimeError(
+            "Unsloth could not initialize a ROCm device. "
+            "Ensure torch detects your GPU and retry. "
+            f"Original error: {UNSLOTH_IMPORT_ERROR}"
+        )
+
     config = load_yaml(Path(config_path))
     run_cfg = config.get("run", {})
     data_cfg = config.get("data", {})
@@ -123,7 +139,7 @@ def _load_model(config: Dict, training_cfg: Dict, peft_cfg: Dict, *, max_seq_len
     )
     if rope_scaling:
         model_kwargs["rope_scaling"] = rope_scaling
-    if use_fa2 is not None:
+    if use_fa2 is True:
         model_kwargs["use_flash_attention_2"] = use_fa2
 
     model, tokenizer = FastLanguageModel.from_pretrained(**model_kwargs)
@@ -145,15 +161,25 @@ def _load_model(config: Dict, training_cfg: Dict, peft_cfg: Dict, *, max_seq_len
     return model, tokenizer
 
 
-def _build_training_arguments(run_cfg: Dict, training_cfg: Dict, evaluation_cfg: Dict, output_dir: Path) -> TrainingArguments:
+def _build_training_arguments(
+    run_cfg: Dict, training_cfg: Dict, evaluation_cfg: Dict, output_dir: Path
+) -> "TrainingArguments":
+    from transformers import TrainingArguments
     precision = (run_cfg.get("mixed_precision") or "").lower()
     bf16 = precision == "bf16"
     fp16 = precision == "fp16"
 
+    eval_strategy = evaluation_cfg.get("eval_strategy") or evaluation_cfg.get("evaluation_strategy")
+
+    max_steps = training_cfg.get("max_steps")
+    if max_steps is None:
+        max_steps = -1
+    epochs = training_cfg.get("epochs", 3)
+
     args = TrainingArguments(
         output_dir=str(output_dir),
-        num_train_epochs=training_cfg.get("epochs", 3),
-        max_steps=training_cfg.get("max_steps"),
+        num_train_epochs=epochs,
+        max_steps=max_steps,
         per_device_train_batch_size=training_cfg.get("per_device_train_batch_size", 2),
         per_device_eval_batch_size=training_cfg.get("per_device_eval_batch_size", 2),
         gradient_accumulation_steps=training_cfg.get("gradient_accumulation_steps", 1),
@@ -162,7 +188,7 @@ def _build_training_arguments(run_cfg: Dict, training_cfg: Dict, evaluation_cfg:
         logging_steps=run_cfg.get("log_steps", 20),
         save_steps=run_cfg.get("save_steps", 500),
         save_total_limit=evaluation_cfg.get("save_total_limit", 3),
-        evaluation_strategy=evaluation_cfg.get("eval_strategy", "steps"),
+        eval_strategy=eval_strategy or "steps",
         eval_steps=evaluation_cfg.get("eval_steps", 500),
         bf16=bf16,
         fp16=fp16,
@@ -172,14 +198,26 @@ def _build_training_arguments(run_cfg: Dict, training_cfg: Dict, evaluation_cfg:
     return args
 
 
+def _coerce_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "\n".join(_coerce_text(item) for item in value)
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
 def _format_example(example: Dict, template: str):
     metadata = example.get("metadata", {}) or {}
-    system_prompt = (
+    system_prompt = _coerce_text(
         example.get("system_prompt")
         or metadata.get("system_prompt")
         or "You are a precise assistant."
     ).strip()
-    user_prompt = (
+    user_prompt = _coerce_text(
         example.get("prompt_text")
         or example.get("prompt")
         or metadata.get("user_prompt")
@@ -193,7 +231,7 @@ def _format_example(example: Dict, template: str):
     )
 
     if assistant_response := example.get("assistant_response"):
-        response_text = assistant_response.strip()
+        response_text = _coerce_text(assistant_response).strip()
     else:
         payload = example.get("response_strong")
         if isinstance(payload, (dict, list)):

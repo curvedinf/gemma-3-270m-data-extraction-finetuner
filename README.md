@@ -76,7 +76,7 @@ This repository houses Fabric automation, configuration, and supporting scripts 
    fab eval.judge --split validation --config configs/judge_slots.yaml
    fab eval.report --run-id validation_YYYYmmddTHHMMSSZ --output reports/latest_eval.md
    ```
-   `fab eval.generate` loads the checkpoint with ROCm Torch/PEFT and writes `reports/model_outputs/{split}_candidates.jsonl`; confirm pass rates in `reports/judge/` and share the Markdown summary in PRs.
+   `fab eval.generate` loads the checkpoint with ROCm Torch/PEFT, applies grammar-based decoding to guarantee JSON-valid completions, and writes `reports/model_outputs/{split}_candidates.jsonl`; confirm pass rates in `reports/judge/` and share the Markdown summary in PRs.
 
 7. **Package deployable artifacts**
    ```bash

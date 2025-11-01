@@ -5,12 +5,17 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 import torch
 from litellm import completion
 from peft import AutoPeftModelForCausalLM
 from transformers import AutoTokenizer
+
+try:
+    from transformers import JsonSchemaConstraint
+except ImportError:  # pragma: no cover - dependency gate
+    JsonSchemaConstraint = None
 
 from . import LOGGER
 from .config import SETTINGS
@@ -61,7 +66,7 @@ def generate_outputs(split: str, config_path: str) -> None:
     load_kwargs = {"torch_dtype": torch_dtype}
     if device_map:
         load_kwargs["device_map"] = device_map
-    if use_fa2 is not None:
+    if use_fa2 is True:
         load_kwargs["use_flash_attention_2"] = use_fa2
 
     model = AutoPeftModelForCausalLM.from_pretrained(model_path, **load_kwargs)
@@ -89,51 +94,97 @@ def generate_outputs(split: str, config_path: str) -> None:
     candidate_file = candidate_dir / f"{split}_candidates.jsonl"
     generated_records: List[Dict] = []
 
+    use_json_grammar = bool(inference_cfg.get("use_json_grammar", False))
+    if use_json_grammar:
+        if JsonSchemaConstraint is None:
+            raise ImportError(
+                "Grammar-based decoding requires transformers>=4.41.0 for JsonSchemaConstraint. "
+                "Install the correct version or disable inference.use_json_grammar."
+            )
+        if batch_size != 1:
+            LOGGER.warning(
+                "Overriding batch_size=%s to 1 to accommodate per-example grammar decoding.", batch_size
+            )
+        batch_size = 1
+
+    do_sample = temperature > 0
+    base_gen_kwargs = {
+        "max_new_tokens": max_new_tokens,
+        "do_sample": do_sample,
+        "pad_token_id": tokenizer.pad_token_id,
+        "eos_token_id": tokenizer.eos_token_id,
+    }
+    if do_sample:
+        base_gen_kwargs["temperature"] = temperature
+        base_gen_kwargs["top_p"] = top_p
+    else:
+        base_gen_kwargs["temperature"] = 0.0
+
     for start in range(0, total, batch_size):
         batch = records[start : start + batch_size]
         prompts = [_format_prompt_for_inference(example, prompt_template) for example in batch]
-        encodings = tokenizer(
-            prompts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=max_seq_length,
-        )
-        encodings = {k: v.to(device) for k, v in encodings.items()}
 
-        do_sample = temperature > 0
-        gen_kwargs = {
-            "max_new_tokens": max_new_tokens,
-            "do_sample": do_sample,
-            "pad_token_id": tokenizer.pad_token_id,
-            "eos_token_id": tokenizer.eos_token_id,
-        }
-        if do_sample:
-            gen_kwargs["temperature"] = temperature
-            gen_kwargs["top_p"] = top_p
+        if use_json_grammar:
+            for example, prompt in zip(batch, prompts):
+                encodings = tokenizer(
+                    prompt,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=max_seq_length,
+                )
+                encodings = {k: v.to(device) for k, v in encodings.items()}
+                gen_kwargs = dict(base_gen_kwargs)
+                constraint = _build_json_constraint(example)
+                if constraint is not None:
+                    gen_kwargs["grammar"] = constraint
+
+                with torch.no_grad():
+                    generated = model.generate(**encodings, **gen_kwargs)
+
+                prompt_length = encodings["input_ids"].shape[1]
+                completion_tokens = generated[0, prompt_length:]
+                completion = tokenizer.decode(completion_tokens, skip_special_tokens=True)
+                trimmed = _trim_stop_sequences(completion, stop_sequences)
+                generated_records.append(
+                    {
+                        "id": example["id"],
+                        "task": example.get("task") or example.get("metadata", {}).get("task"),
+                        "prompt": prompt,
+                        "candidate": trimmed,
+                    }
+                )
         else:
-            gen_kwargs["temperature"] = 0.0
-
-        with torch.no_grad():
-            generated = model.generate(**encodings, **gen_kwargs)
-
-        prompt_length = encodings["input_ids"].shape[1]
-        completions = generated[:, prompt_length:]
-        decoded = tokenizer.batch_decode(completions, skip_special_tokens=True)
-
-        for example, prompt, completion in zip(batch, prompts, decoded):
-            trimmed = _trim_stop_sequences(completion, stop_sequences)
-            generated_records.append(
-                {
-                    "id": example["id"],
-                    "task": example.get("task") or example.get("metadata", {}).get("task"),
-                    "prompt": prompt,
-                    "candidate": trimmed,
-                }
+            encodings = tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=max_seq_length,
             )
+            encodings = {k: v.to(device) for k, v in encodings.items()}
 
-        if (start // batch_size + 1) % 10 == 0 or (start + batch_size) >= total:
-            LOGGER.info("Processed %d/%d examples", min(start + batch_size, total), total)
+            with torch.no_grad():
+                generated = model.generate(**encodings, **base_gen_kwargs)
+
+            prompt_length = encodings["input_ids"].shape[1]
+            completions = generated[:, prompt_length:]
+            decoded = tokenizer.batch_decode(completions, skip_special_tokens=True)
+
+            for example, prompt, completion in zip(batch, prompts, decoded):
+                trimmed = _trim_stop_sequences(completion, stop_sequences)
+                generated_records.append(
+                    {
+                        "id": example["id"],
+                        "task": example.get("task") or example.get("metadata", {}).get("task"),
+                        "prompt": prompt,
+                        "candidate": trimmed,
+                    }
+                )
+
+        processed = min(start + batch_size, total)
+        if ((start // batch_size) + 1) % 10 == 0 or processed >= total:
+            LOGGER.info("Processed %d/%d examples", processed, total)
 
     write_jsonl(candidate_file, generated_records)
     LOGGER.info("Wrote %d candidate completions to %s", len(generated_records), candidate_file)
@@ -382,6 +433,66 @@ def _trim_stop_sequences(text: str, stop_sequences: Iterable[str]) -> str:
         if idx != -1:
             trimmed = trimmed[:idx]
     return trimmed.strip()
+
+
+def _build_json_constraint(example: Dict) -> Optional["JsonSchemaConstraint"]:
+    """
+    Construct a JsonSchemaConstraint based on the reference response for strict decoding.
+    """
+    reference = example.get("response_strong")
+    if isinstance(reference, dict):
+        schema = _build_object_schema(reference)
+    elif isinstance(reference, list):
+        schema = _build_array_schema(reference)
+    else:
+        return None
+
+    if not schema:
+        return None
+    return JsonSchemaConstraint(schema)
+
+
+def _build_object_schema(reference: Dict) -> Dict:
+    properties = {}
+    for key, value in reference.items():
+        if isinstance(value, dict):
+            properties[key] = _build_object_schema(value)
+        elif isinstance(value, list):
+            properties[key] = _build_array_schema(value)
+        elif isinstance(value, bool):
+            properties[key] = {"type": "boolean"}
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            properties[key] = {"type": "number"}
+        elif value is None:
+            properties[key] = {"type": ["null", "string", "number", "boolean", "object", "array"]}
+        else:
+            properties[key] = {"type": "string"}
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": sorted(properties.keys()),
+        "additionalProperties": True,
+    }
+
+
+def _build_array_schema(reference: List) -> Dict:
+    if not reference:
+        item_schema = {"type": ["string", "number", "boolean", "null", "object", "array"]}
+    else:
+        exemplar = reference[0]
+        if isinstance(exemplar, dict):
+            item_schema = _build_object_schema(exemplar)
+        elif isinstance(exemplar, list):
+            item_schema = _build_array_schema(exemplar)
+        elif isinstance(exemplar, bool):
+            item_schema = {"type": "boolean"}
+        elif isinstance(exemplar, (int, float)) and not isinstance(exemplar, bool):
+            item_schema = {"type": "number"}
+        elif exemplar is None:
+            item_schema = {"type": ["null", "string", "number", "boolean", "object", "array"]}
+        else:
+            item_schema = {"type": "string"}
+    return {"type": "array", "items": item_schema}
 
 
 def _summarize_judge_run(records: List[Dict]) -> Dict:

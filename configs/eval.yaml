@@ -12,12 +12,13 @@ model:
   use_flash_attention_2: false
 
 inference:
-  batch_size: 4
+  batch_size: 1
   max_new_tokens: 2048
   temperature: 0.0
   top_p: 0.9
   stop_sequences:
     - "</assistant>"
+  use_json_grammar: true
 
 datasets:
   validation: data/processed/validation.v1.jsonl
@@ -25,4 +26,5 @@ datasets:
 
 notes: >
   Placeholder inference parameters for running Gemma 3 270M via ROCm-compatible
-  runtime before passing outputs to the LLM-as-judge step.
+  runtime before passing outputs to the LLM-as-judge step. Grammar-based decoding
+  is enabled to guarantee JSON-valid generations during evaluation.

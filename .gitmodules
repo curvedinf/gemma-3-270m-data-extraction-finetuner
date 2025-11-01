@@ -1,0 +1,3 @@
+[submodule "third_party/bitsandbytes"]
+	path = third_party/bitsandbytes
+	url = https://github.com/bitsandbytes-foundation/bitsandbytes.git

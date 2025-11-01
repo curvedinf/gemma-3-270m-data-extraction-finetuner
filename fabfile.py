@@ -6,9 +6,9 @@ to mirror the sections defined in PLAN.md. Each task delegates to helper
 functions in `fab_tasks/` so logic stays modular and testable.
 """
 
-from fabric import Collection
+from invoke import Collection
 
-from fab_tasks import dataset, env, evaluate, ops, package, train
+from fab_tasks import TRAIN_IMPORT_ERROR, dataset, env, evaluate, ops, package, train
 
 
 def build_namespace() -> Collection:
@@ -26,11 +26,14 @@ def build_namespace() -> Collection:
     dataset_ns.add_task(dataset.stats, "stats")
     ns.add_collection(dataset_ns)
 
-    train_ns = Collection("train")
-    train_ns.add_task(train.prepare, "prepare")
-    train_ns.add_task(train.run, "run")
-    train_ns.add_task(train.resume, "resume")
-    ns.add_collection(train_ns)
+    if train is not None:
+        train_ns = Collection("train")
+        train_ns.add_task(train.prepare, "prepare")
+        train_ns.add_task(train.run, "run")
+        train_ns.add_task(train.resume, "resume")
+        ns.add_collection(train_ns)
+    elif TRAIN_IMPORT_ERROR is not None:
+        print("[fabfile] Skipping train tasks: {}".format(TRAIN_IMPORT_ERROR))
 
     eval_ns = Collection("eval")
     eval_ns.add_task(evaluate.generate, "generate")

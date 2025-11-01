@@ -7,9 +7,9 @@ run:
   log_steps: 25
 
 model:
-  base_model: google/gemma-3-0.27b-it
+  base_model: google/gemma-3-270m
   revision: main
-  tokenizer: google/gemma-3-0.27b-it
+  tokenizer: google/gemma-3-270m
   trust_remote_code: false
   rope_scaling:
     type: linear
@@ -49,4 +49,5 @@ evaluation:
 
 notes: >
   Placeholder configuration. Tune hyperparameters once dataset characteristics
-  and hardware constraints are finalized.
+  and hardware constraints are finalized. Training examples are curated for strict
+  JSON extraction so downstream decoding can leverage grammar-constrained generation.
