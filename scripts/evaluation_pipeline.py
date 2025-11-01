@@ -26,7 +26,7 @@ JUDGE_REPORT_DIR = Path("reports/judge")
 EVAL_CONFIG_PATH = Path("configs/eval.yaml")
 
 
-def generate_outputs(split: str, config_path: str) -> None:
+def generate_outputs(split: str, config_path: str, run_id: str | None = None) -> None:
     """Run ROCm-enabled inference with the fine-tuned model for a dataset split."""
 
     config = load_yaml(Path(config_path))
@@ -40,6 +40,10 @@ def generate_outputs(split: str, config_path: str) -> None:
 
     candidate_dir = Path(output_cfg.get("candidate_dir", EVAL_OUTPUT_DIR))
     candidate_dir.mkdir(parents=True, exist_ok=True)
+    run_id = run_id or output_cfg.get("run_id")
+    if run_id is None:
+        run_id = f"{split}_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+    candidate_file = candidate_dir / f"{run_id}_candidates.jsonl"
     prompt_template_path = Path(output_cfg.get("prompt_template", "configs/prompts/eval_prompt.txt"))
     prompt_template = prompt_template_path.read_text(encoding="utf-8")
 
@@ -91,21 +95,21 @@ def generate_outputs(split: str, config_path: str) -> None:
     total = len(records)
     LOGGER.info("Generating outputs for %d examples in %s", total, dataset_path)
 
-    candidate_file = candidate_dir / f"{split}_candidates.jsonl"
     generated_records: List[Dict] = []
 
     use_json_grammar = bool(inference_cfg.get("use_json_grammar", False))
     if use_json_grammar:
         if JsonSchemaConstraint is None:
-            raise ImportError(
-                "Grammar-based decoding requires transformers>=4.41.0 for JsonSchemaConstraint. "
-                "Install the correct version or disable inference.use_json_grammar."
+            LOGGER.warning(
+                "JsonSchemaConstraint not available in current transformers build; "
+                "disabling grammar-based decoding."
             )
+            use_json_grammar = False
         if batch_size != 1:
             LOGGER.warning(
                 "Overriding batch_size=%s to 1 to accommodate per-example grammar decoding.", batch_size
             )
-        batch_size = 1
+            batch_size = 1
 
     do_sample = temperature > 0
     base_gen_kwargs = {
@@ -190,7 +194,7 @@ def generate_outputs(split: str, config_path: str) -> None:
     LOGGER.info("Wrote %d candidate completions to %s", len(generated_records), candidate_file)
 
 
-def run_judging(split: str, config_path: str) -> None:
+def run_judging(split: str, config_path: str, run_id: str | None = None) -> None:
     """
     Invoke LiteLLM-backed judge to compare candidate vs reference outputs.
     """
@@ -201,7 +205,13 @@ def run_judging(split: str, config_path: str) -> None:
     if not dataset_path.exists():
         raise FileNotFoundError(f"Reference dataset for split '{split}' not found at {dataset_path}")
 
-    candidate_file = EVAL_OUTPUT_DIR / f"{split}_candidates.jsonl"
+    candidate_dir = Path(eval_config.get("model_output", {}).get("candidate_dir", EVAL_OUTPUT_DIR))
+    candidate_dir.mkdir(parents=True, exist_ok=True)
+    run_id = run_id or eval_config.get("model_output", {}).get("run_id")
+    if run_id:
+        candidate_file = candidate_dir / f"{run_id}_candidates.jsonl"
+    else:
+        candidate_file = candidate_dir / f"{split}_candidates.jsonl"
     if not candidate_file.exists():
         raise FileNotFoundError(
             f"Candidate outputs for split '{split}' missing. Expected {candidate_file}. "
@@ -220,7 +230,8 @@ def run_judging(split: str, config_path: str) -> None:
     temperature = defaults.get("temperature", 0.0)
     max_tokens = defaults.get("max_tokens", 512)
 
-    run_id = f"{split}_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
+    if run_id is None:
+        run_id = f"{split}_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
     output_path = JUDGE_REPORT_DIR / f"{run_id}_judge.jsonl"
     summary_path = JUDGE_REPORT_DIR / f"{run_id}_summary.json"
     JUDGE_REPORT_DIR.mkdir(parents=True, exist_ok=True)

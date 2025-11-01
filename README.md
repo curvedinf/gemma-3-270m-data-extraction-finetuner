@@ -6,7 +6,7 @@ This repository houses Fabric automation, configuration, and supporting scripts 
 - Linux environment with ROCm-capable GPUs (for training/inference stages).
 - Python 3.10+ recommended.
 - Access to strong-model logs that provide *correct* JSON outputs to supervise Gemma.
-- LiteLLM configured with the desired judge backend (environment variables or `litellm` config file).
+- LiteLLM configured with the desired judge backend (environment variables or `litellm` config file). By default we point at `openrouter/qwen/qwen3-coder-30b-a3b-instruct`; export `LITELLM_API_BASE=https://openrouter.ai/api/v1` and `LITELLM_API_KEY=<your key>` before running judge tasks.
 - `git`, `make` (optional), and Fabric 3.x (installed via project requirements).
 - Hardware capable of 128k-context training (e.g., 80GB+ ROCm GPUs) — the pipeline applies 4× rope scaling to extend Gemma 3 270M from 32k to 128k tokens.
 - Hugging Face tooling (`transformers`, `optimum[amd]`) installs via `requirements.txt`; AMD's *Running models from Hugging Face* guide covers optional Flash Attention 2, GPTQ, and ONNX workflows.

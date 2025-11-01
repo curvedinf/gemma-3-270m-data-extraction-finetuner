@@ -1,6 +1,6 @@
 # Slot similarity definitions for LLM-as-judge evaluation.
 defaults:
-  judge_model: gpt-4o-mini
+  judge_model: openrouter/qwen/qwen3-coder-30b-a3b-instruct
   temperature: 0.0
   max_tokens: 512
   retry_on_invalid_json: 3

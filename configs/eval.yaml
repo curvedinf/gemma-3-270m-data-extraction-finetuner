@@ -18,7 +18,7 @@ inference:
   top_p: 0.9
   stop_sequences:
     - "</assistant>"
-  use_json_grammar: true
+  use_json_grammar: false
 
 datasets:
   validation: data/processed/validation.v1.jsonl
