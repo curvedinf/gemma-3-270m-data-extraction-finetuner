@@ -44,6 +44,7 @@ def generate_outputs(split: str, config_path: str, run_id: str | None = None) ->
     if run_id is None:
         run_id = f"{split}_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}"
     candidate_file = candidate_dir / f"{run_id}_candidates.jsonl"
+    LOGGER.info("Writing candidates to %s", candidate_file)
     prompt_template_path = Path(output_cfg.get("prompt_template", "configs/prompts/eval_prompt.txt"))
     prompt_template = prompt_template_path.read_text(encoding="utf-8")
 
@@ -235,6 +236,7 @@ def run_judging(split: str, config_path: str, run_id: str | None = None) -> None
     output_path = JUDGE_REPORT_DIR / f"{run_id}_judge.jsonl"
     summary_path = JUDGE_REPORT_DIR / f"{run_id}_summary.json"
     JUDGE_REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    LOGGER.info("Judging run_id=%s (candidates=%s)", run_id, candidate_file)
 
     judged_records: List[Dict] = []
     for example_id, reference in references.items():

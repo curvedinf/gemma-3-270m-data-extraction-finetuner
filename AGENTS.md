@@ -6,11 +6,11 @@
 - Data artifacts live in `data/raw/` and `data/processed/`, checkpoints in `models/`, and reports in `reports/`.
 
 ## Build, Test, and Development Commands
-- Run `./scripts/setup_env.sh` to create `.venv`, install dependencies, and scaffold `.env` from the template.
-- Dataset flow: manually `scp` the DuckDB file into `data/raw/` (table `examples` with `id`, `task`, `prompt_text`, `response_strong`, `metadata`, optional `slot_specs`) and then run `fab dataset.clean|split|stats` for normalization, stratification, and coverage summaries.
-- Training flow: `fab train.prepare`, `fab train.run --config configs/training.yaml`, and `fab train.resume` scaffold, launch, and restart fine-tuning.
-- Evaluation and ops: `fab eval.generate|judge|report`, `fab package.export`, and `fab ops.project_tokens` cover judging, packaging, and usage tracking. Export ROCm env variables from `.env` (e.g., `ROCM_VISIBLE_DEVICES`, `HSA_OVERRIDE_GFX_VERSION`) before invoking long-context runs.
-- `requirements.txt` installs the ROCm nightly PyTorch stack and `optimum[amd]`; rerun `./scripts/setup_env.sh` after modifying dependencies or when AMD publishes updated wheels.
+- Run `./01_setup_env.sh` to create `.venv`, install ROCm nightly torch/vision/audio, build the bundled bitsandbytes submodule, and scaffold `.env` from the template.
+- Dataset flow: place a DuckDB export in `data/raw/` (table `examples` with `id`, `task`, `prompt_text`, `response_strong`, `metadata`, optional `slot_specs`) and run `./02_dataset_pipeline.sh` for clean→split→stats. Fabric equivalents remain under `fab dataset.clean|split|stats` when you need finer control.
+- Training flow: `./03_training_pipeline.sh` verifies a ROCm GPU is visible, snapshots configs, and delegates to `fab train.prepare|run|resume`. It skips automatically when Uns­loth cannot initialize HIP.
+- Evaluation and ops: `./04_evaluation_pipeline.sh` runs generate→judge→report with a shared `RUN_ID`. Direct Fabric usage (`fab eval.generate|judge|report`) now accepts `--run-id` to keep artifacts aligned. `fab package.export` and `fab ops.project_tokens` continue to cover packaging and usage tracking. Export ROCm env variables (`ROCM_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, `HSA_OVERRIDE_GFX_VERSION`, etc.) from `.env` before long-context runs.
+- `requirements.txt` installs the ROCm nightly PyTorch stack plus `optimum[amd]`. Re-run `./01_setup_env.sh` after dependency changes or when AMD publishes updated wheels.
 - 128k context: `configs/training.yaml` ships with `max_seq_length: 131072` and rope scaling (`factor: 4.0`). Adjust downward only if a new task cannot fit within 128k tokens.
 
 ## Coding Style & Naming Conventions
@@ -33,9 +33,9 @@
 - `prompt_text` should mirror the real prompts (`NavPage.analyze` classification question or `ProductPage.analyze` extraction instructions) so fine-tuning sees the same mutilated HTML snippets the production LLM receives.
 - `response_strong` may be JSON or plain text; the cleaner serializes both into training/eval targets while preserving raw structures for judging.
 - Default rope scaling keeps Gemma responsive to long prompts; update `model.rope_scaling` and `training.max_seq_length` together when introducing new context lengths.
-- Evaluation loads checkpoints via ROCm Torch + PEFT; ensure the training output directory stays accessible and contains merged weights before calling `fab eval.generate`.
+- Evaluation loads checkpoints via ROCm Torch + PEFT; ensure the training output directory stays accessible and contains merged weights before calling `fab eval.generate`. Grammar-based decoding is disabled by default because the current Transformers build lacks `JsonSchemaConstraint`—re-enable `inference.use_json_grammar` only after upgrading the stack.
 - Flip `model.use_flash_attention_2` to `true` in training/eval configs once Flash Attention 2 kernels are confirmed on the host (per AMD's Hugging Face documentation).
 
 ## Security & Configuration Tips
-- Copy `.env.example` to `.env` and populate dataset paths (`DATASET_DB_PATH`), LiteLLM credentials, and registry tokens. The file is gitignored and automatically loaded by `scripts/config.py` via python-dotenv.
+- Copy `.env.example` to `.env` and populate dataset paths (`DATASET_DB_PATH`), LiteLLM credentials (including `LITELLM_API_BASE=https://openrouter.ai/api/v1` and the default `LITELLM_JUDGE_MODEL`), and registry tokens. The file is gitignored and automatically loaded by `scripts/config.py` via python-dotenv.
 - Rotate secrets regularly and prefer short-lived credentials; reference them in runbooks or PRs without pasting raw tokens.

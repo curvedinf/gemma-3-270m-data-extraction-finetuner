@@ -28,15 +28,16 @@ This repository houses Fabric automation, configuration, and supporting scripts 
    ```bash
    # edit .env and populate dataset paths, LiteLLM keys, and registry tokens
    ```
-   Sensitive values (e.g., `LITELLM_API_KEY`, `HUGGINGFACE_TOKEN`) stay outside Git and are loaded automatically via `scripts/config.py`. Adjust the ROCm environment variables (`ROCM_VISIBLE_DEVICES`, `HSA_OVERRIDE_GFX_VERSION`, etc.) in `.env` to match your GPU topology before launching training or inference.
+Sensitive values (e.g., `LITELLM_API_KEY`, `HUGGINGFACE_TOKEN`) stay outside Git and are loaded automatically via `scripts/config.py`. For the default OpenRouter judge set `LITELLM_API_BASE=https://openrouter.ai/api/v1` and `LITELLM_JUDGE_MODEL=openrouter/qwen/qwen3-coder-30b-a3b-instruct` alongside your `LITELLM_API_KEY`. Adjust the ROCm environment variables (`ROCM_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, `HSA_OVERRIDE_GFX_VERSION`, etc.) in `.env` to match your GPU topology before launching training or inference.
 
-4. **Explore Fabric task groups**
+4. **Use the helper scripts or Fabric tasks**
    ```bash
-   fab -l
-   fab dataset.clean --schema-version v1  # requires data/raw/dataset.duckdb
-   fab train.prepare
+   ./01_setup_env.sh             # bootstraps the ROCm torch environment
+   ./02_dataset_pipeline.sh      # runs clean/split/stats over data/raw/dataset.duckdb
+   ./03_training_pipeline.sh     # launches Unsloth SFT (requires a visible ROCm GPU)
+   ./04_evaluation_pipeline.sh   # keeps a shared RUN_ID for generate→judge→report
    ```
-   Each collection (`env`, `dataset`, `train`, `eval`, `package`, `ops`) aligns with the sections in `PLAN.md`.
+   The scripts source `.env`, apply ROCm variables, and keep Fabric invocations consistent. Run `fab -l` if you prefer calling collections directly.
 
 ## Training Workflow
 1. **Copy the dataset DuckDB**
@@ -72,11 +73,11 @@ This repository houses Fabric automation, configuration, and supporting scripts 
 
 6. **Evaluate with LiteLLM judge**
    ```bash
-   fab eval.generate --split validation --config configs/eval.yaml
-   fab eval.judge --split validation --config configs/judge_slots.yaml
+   fab eval.generate --split validation --config configs/eval.yaml --run-id validation_YYYYmmddTHHMMSSZ
+   fab eval.judge --split validation --config configs/judge_slots.yaml --run-id validation_YYYYmmddTHHMMSSZ
    fab eval.report --run-id validation_YYYYmmddTHHMMSSZ --output reports/latest_eval.md
    ```
-   `fab eval.generate` loads the checkpoint with ROCm Torch/PEFT, applies grammar-based decoding to guarantee JSON-valid completions, and writes `reports/model_outputs/{split}_candidates.jsonl`; confirm pass rates in `reports/judge/` and share the Markdown summary in PRs.
+   `fab eval.generate` writes `reports/model_outputs/<run_id>_candidates.jsonl`. Grammar-based decoding is disabled by default because the bundled Transformers build (4.57.1) lacks `JsonSchemaConstraint`; re-enable `inference.use_json_grammar` once the ROCm stack is upgraded. The judge reads the matching run id, calls OpenRouter via LiteLLM, and stores results / summaries under `reports/judge/`.
 
 7. **Package deployable artifacts**
    ```bash
@@ -97,20 +98,19 @@ The cleaning step infers sensible defaults (e.g., system prompts for nav/product
 
 ## Repository Layout
 - `fabfile.py` – orchestrates Fabric task collections.
-- `fab_tasks/` – thin wrappers delegating work to script modules.
-- `scripts/` – placeholder implementations for dataset, training, evaluation, packaging, and operational helpers. Expand these with real logic as data and infra become available.
-- `configs/` – YAML/TXT configs for datasets, training hyperparameters, judge behavior, evaluation prompts, packaging, and token usage projections.
-- `data/` – empty directories reserved for raw (`data/raw`) and processed (`data/processed`) datasets.
-  - Copy `dataset.duckdb` into `data/raw/` to provide training exemplars.
-- `models/` – checkpoints, adapters, and packaged artifacts.
-- `reports/` – generated evaluation summaries and judge outputs.
-- `PLAN.md` – high-level roadmap and best practices.
+- `fab_tasks/` – Fabric wrappers delegating work to script modules; many accept `--config`, `--run-id`, or `--resume` flags.
+- `scripts/` – dataset, training, evaluation, packaging, and ops pipelines backing the Fabric tasks.
+- `configs/` – YAML/TXT configs for datasets, hyperparameters, prompts, judge behaviour, packaging, and usage projections.
+- `data/` – staging area for raw DuckDB exports (`data/raw/`) and processed splits (`data/processed/`). Both directories are gitignored.
+- `models/` – fine-tuned checkpoints, adapters, and exports (gitignored).
+- `reports/` – generated candidate files, judge outputs, and Markdown summaries (gitignored).
+- `third_party/bitsandbytes/` – git submodule used to build the ROCm-native `libbitsandbytes_rocm70.so`. `./scripts/setup_env.sh` installs the Python package and relies on this build when 4-bit loading is enabled.
 
 ## Pipeline Highlights
-- **Dataset tooling** (`scripts/dataset_pipeline.py`) ingests DuckDB-sourced exemplars, validates them via Pydantic, normalizes prompts/targets for nav-page classification and product-page extraction, infers domains for stratification, and stratifies splits per `configs/datasets.yaml`. `fab dataset.clean` and `fab dataset.split` execute end-to-end once the `.duckdb` file is in `data/raw/`.
-- **128k context training** (`configs/training.yaml`) applies rope scaling (`factor: 4.0`) and sets `max_seq_length: 131072`, ensuring the fine-tuned Gemma model can process the long prompt payloads generated by `NavPage.analyze` and `ProductPage.analyze`.
-- **Training loop with Unsloth** (`scripts/training_pipeline.py`) loads configs from `configs/training.yaml`, instantiates Gemma 3 270M using `FastLanguageModel`, applies LoRA adapters, and runs SFT fine-tuning through TRL. `fab train.run` accepts `--config` overrides and optional `--resume`.
-- **Evaluation with LiteLLM judge** (`scripts/evaluation_pipeline.py`) performs ROCm Torch+PEFT inference (optionally enabling Flash Attention 2 via `model.use_flash_attention_2`) to materialize candidates, compares them with references using LiteLLM, and emits Markdown summaries via `fab eval.judge` + `fab eval.report`.
+- **Dataset tooling** (`scripts/dataset_pipeline.py`) ingests DuckDB-sourced exemplars, validates them via Pydantic, normalizes prompts/targets, and stratifies splits per `configs/datasets.yaml`. `./02_dataset_pipeline.sh` runs clean→split→stats in sequence.
+- **128k context training** (`configs/training.yaml`) applies rope scaling (`factor: 4.0`) and sets `max_seq_length: 131072`, keeping Gemma responsive to long HTML prompts.
+- **Training loop with Unsloth** (`scripts/training_pipeline.py`) loads Gemma 3 270M through `FastLanguageModel`, applies LoRA adapters, and runs SFT via TRL. The helper script (`./03_training_pipeline.sh`) snapshots configs, builds ROCm bitsandbytes in `.venv`, and skips automatically when no GPU is visible.
+- **Evaluation with LiteLLM judge** (`scripts/evaluation_pipeline.py`) loads the fine-tuned checkpoint, writes `run_id`-scoped candidate files, and judges them with OpenRouter via LiteLLM. Grammar-based decoding is guarded behind `inference.use_json_grammar` and defaults to `false` until the ROCm stack exposes `JsonSchemaConstraint`.
 
 ## Next Implementation Steps
 1. **Dataset acquisition**
@@ -132,11 +132,9 @@ The cleaning step infers sensible defaults (e.g., system prompts for nav/product
 
 ## Best Practices
 - Keep curated DuckDB exports (`data/raw/dataset.duckdb`) and processed `.jsonl` snapshots with rich metadata so they can be regenerated/revalidated, including the full prompt text used in NavPage/ProductPage analyses.
-- Snapshot configs and dataset checksums for each training/eval run to guarantee reproducibility.
+- Snapshot configs, dataset checksums, and the `run_id`-scoped evaluation artifacts for each training/eval run to guarantee reproducibility.
 - Monitor token usage versus the 10M/day budget via `fab ops.project_tokens`.
-- Record judge transcripts and maintain a manual review loop for regression failures.
+- Record judge transcripts and maintain a manual review loop for regression failures. The JSONL + summary pairs under `reports/judge/` should accompany PRs.
 - Store API tokens and environment-specific paths in `.env` (based on `.env.example`) so secrets never land in Git history.
-- Validate ROCm settings (`ROCM_VISIBLE_DEVICES`, `HSA_OVERRIDE_GFX_VERSION`, allocator tuning) on each host before launching 128k-context jobs; mismatched settings are the most common cause of OOMs or kernel faults.
-- Enable Flash Attention 2 by setting `model.use_flash_attention_2: true` in `configs/training.yaml` / `configs/eval.yaml` after verifying the kernels are available (per AMD's Hugging Face guidance).
-
-Refer to `PLAN.md` for deeper context, open questions, and long-term guidance.
+- Validate ROCm settings (`ROCM_VISIBLE_DEVICES`, `HIP_VISIBLE_DEVICES`, `ROCR_VISIBLE_DEVICES`, `HSA_OVERRIDE_GFX_VERSION`, allocator tuning) on each host before launching 128k-context jobs; mismatched settings remain the most common cause of OOMs or kernel faults.
+- Enable Flash Attention 2 or grammar-based decoding only after verifying the ROCm stack exposes the necessary kernels and Transformers APIs.
